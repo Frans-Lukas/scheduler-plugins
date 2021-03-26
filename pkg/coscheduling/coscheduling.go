@@ -19,13 +19,13 @@ package coscheduling
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
@@ -34,7 +34,6 @@ import (
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 
 	"sigs.k8s.io/scheduler-plugins/pkg/apis/config"
-	"sigs.k8s.io/scheduler-plugins/pkg/coscheduling/core"
 	pgclientset "sigs.k8s.io/scheduler-plugins/pkg/generated/clientset/versioned"
 	pgformers "sigs.k8s.io/scheduler-plugins/pkg/generated/informers/externalversions"
 	"sigs.k8s.io/scheduler-plugins/pkg/util"
@@ -43,16 +42,12 @@ import (
 // Coscheduling is a plugin that schedules pods in a group.
 type Coscheduling struct {
 	frameworkHandler framework.FrameworkHandle
-	pgMgr            core.Manager
 	scheduleTimeout  *time.Duration
+	jobCreationTimestamps *map[string]time.Time
 }
 
 var _ framework.QueueSortPlugin = &Coscheduling{}
-var _ framework.PreFilterPlugin = &Coscheduling{}
-var _ framework.PostFilterPlugin = &Coscheduling{}
-var _ framework.PermitPlugin = &Coscheduling{}
-var _ framework.ReservePlugin = &Coscheduling{}
-var _ framework.PostBindPlugin = &Coscheduling{}
+var _ framework.FilterPlugin = &Coscheduling{}
 
 const (
 	// Name is the name of the plugin used in Registry and configurations.
@@ -85,15 +80,16 @@ func New(obj runtime.Object, handle framework.FrameworkHandle) (framework.Plugin
 	podInformer := informerFactory.Core().V1().Pods()
 
 	scheduleTimeDuration := time.Duration(args.PermitWaitingTimeSeconds) * time.Second
-	deniedPGExpirationTime := time.Duration(args.DeniedPGExpirationTimeSeconds) * time.Second
 
 	ctx := context.TODO()
 
-	pgMgr := core.NewPodGroupManager(pgClient, handle.SnapshotSharedLister(), &scheduleTimeDuration, &deniedPGExpirationTime, pgInformer, podInformer)
+
+	podCreationMap := make(map[string]time.Time, 0)
+
 	plugin := &Coscheduling{
 		frameworkHandler: handle,
-		pgMgr:            pgMgr,
 		scheduleTimeout:  &scheduleTimeDuration,
+		jobCreationTimestamps: &podCreationMap,
 	}
 	pgInformerFactory.Start(ctx.Done())
 	informerFactory.Start(ctx.Done())
@@ -108,164 +104,110 @@ func New(obj runtime.Object, handle framework.FrameworkHandle) (framework.Plugin
 func (cs *Coscheduling) Name() string {
 	return Name
 }
+func GetNamespacedName(obj metav1.Object) string {
+	return fmt.Sprintf("%v/%v", obj.GetNamespace(), obj.GetName())
+}
+
+func (cs *Coscheduling) addJobTimeStampToMap(podInfo *framework.QueuedPodInfo) {
+	podId := getPodId(podInfo.Pod.Name)
+	timeStamp := podInfo.Timestamp
+
+	// podId exists
+	if prevTimeStamp, ok := (*cs.jobCreationTimestamps)[podId]; ok {
+
+		// previous time stamp was after the received time stamp
+		if prevTimeStamp.After(timeStamp) {
+			(*cs.jobCreationTimestamps)[podId] = timeStamp
+		}
+	} else {
+		(*cs.jobCreationTimestamps)[podId] = timeStamp
+	}
+}
 
 // Less is used to sort pods in the scheduling queue in the following order.
 // 1. Compare the priorities of Pods.
-// 2. Compare the initialization timestamps of PodGroups or Pods.
+// 2. Compare the initialization timestamps of jobIds.
 // 3. Compare the keys of PodGroups/Pods: <namespace>/<podname>.
 func (cs *Coscheduling) Less(podInfo1, podInfo2 *framework.QueuedPodInfo) bool {
+	podId1 := getPodId(podInfo1.Pod.Name)
+	podId2 := getPodId(podInfo2.Pod.Name)
+
+	cs.addJobTimeStampToMap(podInfo1)
+	cs.addJobTimeStampToMap(podInfo2)
 	prio1 := podutil.GetPodPriority(podInfo1.Pod)
 	prio2 := podutil.GetPodPriority(podInfo2.Pod)
 	if prio1 != prio2 {
 		return prio1 > prio2
 	}
-	creationTime1 := cs.pgMgr.GetCreationTimestamp(podInfo1.Pod, podInfo1.InitialAttemptTimestamp)
-	creationTime2 := cs.pgMgr.GetCreationTimestamp(podInfo2.Pod, podInfo2.InitialAttemptTimestamp)
+	creationTime1 := (*cs.jobCreationTimestamps)[podId1]
+	creationTime2 := (*cs.jobCreationTimestamps)[podId2]
 	if creationTime1.Equal(creationTime2) {
-		return core.GetNamespacedName(podInfo1.Pod) < core.GetNamespacedName(podInfo2.Pod)
+		return GetNamespacedName(podInfo1.Pod) < GetNamespacedName(podInfo2.Pod)
 	}
 	return creationTime1.Before(creationTime2)
 }
 
-// PreFilter performs the following validations.
-// 1. Whether the PodGroup that the Pod belongs to is on the deny list.
-// 2. Whether the total number of pods in a PodGroup is less than its `minMember`.
-func (cs *Coscheduling) PreFilter(ctx context.Context, state *framework.CycleState, pod *v1.Pod) *framework.Status {
-	// If any validation failed, a no-op state data is injected to "state" so that in later
-	// phases we can tell whether the failure comes from PreFilter or not.
-	if err := cs.pgMgr.PreFilter(ctx, pod); err != nil {
-		klog.Error(err)
-		state.Write(cs.getStateKey(), NewNoopStateData())
-		return framework.NewStatus(framework.Unschedulable, err.Error())
+
+
+func (cs *Coscheduling) PostFilter2(ctx context.Context, state *framework.CycleState, pod *v1.Pod,
+	filteredNodeStatusMap framework.NodeToStatusMap) (*framework.PostFilterResult, *framework.Status) {
+	return nil, nil
+}
+
+func (cs *Coscheduling) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
+	podName := pod.Name
+	strings.Contains(podName, "worker")
+
+	// Ignore non-DL pods (scheduler, controllers etc..)
+	if !isDLPod(podName) {
+		return framework.NewStatus(framework.Success, "")
+	}
+
+	nodePods := nodeInfo.Pods
+
+	for _, nodePod := range nodePods {
+		nodePodName := nodePod.Pod.Name
+		// don't schedule worker pods together.
+		if isWorkerPod(podName) && isWorkerPod(nodePodName){
+			return framework.NewStatus(framework.Unschedulable, "worker already exists on node")
+		}
+
+		// don't schedule server pods together.
+		if isServerPod(podName) && isServerPod(nodePodName){
+			return framework.NewStatus(framework.Unschedulable, "server already exists on node")
+		}
+
+		// only schedule pods with same id together
+		if getPodId(nodePodName) != getPodId(nodePodName) {
+			return framework.NewStatus(framework.Unschedulable, "pod ids are different")
+		}
 	}
 	return framework.NewStatus(framework.Success, "")
 }
 
-// PostFilter is used to rejecting a group of pods if a pod does not pass PreFilter or Filter.
-func (cs *Coscheduling) PostFilter(ctx context.Context, state *framework.CycleState, pod *v1.Pod,
-	filteredNodeStatusMap framework.NodeToStatusMap) (*framework.PostFilterResult, *framework.Status) {
-	// Check if the failure comes from PreFilter or not.
-	_, err := state.Read(cs.getStateKey())
-	if err == nil {
-		state.Delete(cs.getStateKey())
-		return &framework.PostFilterResult{}, framework.NewStatus(framework.Unschedulable)
+func getPodId(name string) string {
+	if len(name) < 10 {
+		return name
 	}
-
-	pgName, pg := cs.pgMgr.GetPodGroup(pod)
-	if pg == nil {
-		klog.V(4).Info("Pod does not belong to any group")
-		return &framework.PostFilterResult{}, framework.NewStatus(framework.Unschedulable, "can not find pod group")
-	}
-
-	// This indicates there are already enough Pods satisfying the PodGroup,
-	// so don't bother to reject the whole PodGroup.
-	assigned := cs.pgMgr.CalculateAssignedPods(pg.Name, pod.Namespace)
-	if assigned >= int(pg.Spec.MinMember) {
-		klog.V(4).Infof("%v pods of %v assigned", assigned, pgName)
-		return &framework.PostFilterResult{}, framework.NewStatus(framework.Unschedulable)
-	}
-
-	// If the gap is less than/equal 10%, we may want to try subsequent Pods
-	// to see they can satisfy the PodGroup
-	notAssiginedPercentage := float32(int(pg.Spec.MinMember)-assigned) / float32(pg.Spec.MinMember)
-	if notAssiginedPercentage <= 0.1 {
-		klog.V(4).Infof("%.2f/100 pods of group %v have not assigned", float32(assigned*100), pgName)
-		return &framework.PostFilterResult{}, framework.NewStatus(framework.Unschedulable)
-	}
-
-	// It's based on an implicit assumption: if the nth Pod failed,
-	// it's inferrable other Pods belonging to the same PodGroup would be very likely to fail.
-	cs.frameworkHandler.IterateOverWaitingPods(func(waitingPod framework.WaitingPod) {
-		if waitingPod.GetPod().Namespace == pod.Namespace && waitingPod.GetPod().Labels[util.PodGroupLabel] == pg.Name {
-			klog.V(3).Infof("PostFilter rejects the pod: %v/%v", pgName, waitingPod.GetPod().Name)
-			waitingPod.Reject(cs.Name())
-		}
-	})
-	cs.pgMgr.AddDeniedPodGroup(pgName)
-	cs.pgMgr.DeletePermittedPodGroup(pgName)
-	return &framework.PostFilterResult{}, framework.NewStatus(framework.Unschedulable,
-		fmt.Sprintf("PodGroup %v gets rejected due to Pod %v is unschedulable even after PostFilter", pgName, pod.Name))
+	return name[:10]
 }
 
-// PreFilterExtensions returns a PreFilterExtensions interface if the plugin implements one.
-func (cs *Coscheduling) PreFilterExtensions() framework.PreFilterExtensions {
-	return nil
+func isServerPod(name string) bool {
+	return strings.Contains(name, "server")
 }
 
-// Permit is the functions invoked by the framework at "Permit" extension point.
-func (cs *Coscheduling) Permit(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) (*framework.Status, time.Duration) {
-	fullName := util.GetPodGroupFullName(pod)
-	if len(fullName) == 0 {
-		return framework.NewStatus(framework.Success, ""), 0
-	}
-	waitTime := *cs.scheduleTimeout
-	ready, err := cs.pgMgr.Permit(ctx, pod, nodeName)
-	if err != nil {
-		_, pg := cs.pgMgr.GetPodGroup(pod)
-		if pg == nil {
-			return framework.NewStatus(framework.UnschedulableAndUnresolvable, "PodGroup not found"), waitTime
-		}
-		if wait := util.GetWaitTimeDuration(pg, cs.scheduleTimeout); wait != 0 {
-			waitTime = wait
-		}
-		if err == util.ErrorWaiting {
-			klog.Infof("Pod: %v is waiting to be scheduled to node: %v", core.GetNamespacedName(pod), nodeName)
-			return framework.NewStatus(framework.Wait, ""), waitTime
-		}
-		klog.Infof("Permit error %v", err)
-		return framework.NewStatus(framework.Unschedulable, err.Error()), waitTime
-	}
-
-	klog.V(5).Infof("Pod requires pgName %v", fullName)
-	if !ready {
-		return framework.NewStatus(framework.Wait, ""), waitTime
-	}
-
-	cs.frameworkHandler.IterateOverWaitingPods(func(waitingPod framework.WaitingPod) {
-		if util.GetPodGroupFullName(waitingPod.GetPod()) == fullName {
-			klog.V(3).Infof("Permit allows the pod: %v", core.GetNamespacedName(waitingPod.GetPod()))
-			waitingPod.Allow(cs.Name())
-		}
-	})
-	klog.V(3).Infof("Permit allows the pod: %v", core.GetNamespacedName(pod))
-	return framework.NewStatus(framework.Success, ""), 0
+func isWorkerPod(name string) bool {
+	return strings.Contains(name, "worker")
 }
 
-// Reserve is the functions invoked by the framework at "reserve" extension point.
-func (cs *Coscheduling) Reserve(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) *framework.Status {
-	return nil
+func isSchedulerPod(name string) bool {
+	return strings.Contains(name, "scheduler")
 }
 
-// Unreserve rejects all other Pods in the PodGroup when one of the pods in the group times out.
-func (cs *Coscheduling) Unreserve(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) {
-	pgName, pg := cs.pgMgr.GetPodGroup(pod)
-	if pg == nil {
-		return
-	}
-	cs.frameworkHandler.IterateOverWaitingPods(func(waitingPod framework.WaitingPod) {
-		if waitingPod.GetPod().Namespace == pod.Namespace && waitingPod.GetPod().Labels[util.PodGroupLabel] == pg.Name {
-			klog.V(3).Infof("Unreserve rejects the pod: %v/%v", pgName, waitingPod.GetPod().Name)
-			waitingPod.Reject(cs.Name())
-		}
-	})
-	cs.pgMgr.AddDeniedPodGroup(pgName)
-	cs.pgMgr.DeletePermittedPodGroup(pgName)
+func isDLPod(name string) bool {
+	return isWorkerPod(name) || isServerPod(name) || isSchedulerPod(name)
 }
 
-// PostBind is called after a pod is successfully bound. These plugins are used update PodGroup when pod is bound.
-func (cs *Coscheduling) PostBind(ctx context.Context, _ *framework.CycleState, pod *v1.Pod, nodeName string) {
-	klog.V(5).Infof("PostBind pod: %v", core.GetNamespacedName(pod))
-	cs.pgMgr.PostBind(ctx, pod, nodeName)
-}
-
-// rejectPod rejects pod in cache
-func (cs *Coscheduling) rejectPod(uid types.UID) {
-	waitingPod := cs.frameworkHandler.GetWaitingPod(uid)
-	if waitingPod == nil {
-		return
-	}
-	waitingPod.Reject(Name)
-}
 
 func (cs *Coscheduling) getStateKey() framework.StateKey {
 	return framework.StateKey(fmt.Sprintf("Prefilter-%v", cs.Name()))
