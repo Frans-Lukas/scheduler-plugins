@@ -167,16 +167,6 @@ func (cs *Coscheduling) Filter(ctx context.Context, state *framework.CycleState,
 
 	for _, nodePod := range nodePods {
 		nodePodName := nodePod.Pod.Name
-		// don't schedule worker pods together.
-		if isWorkerPod(podName) && isWorkerPod(nodePodName){
-			return framework.NewStatus(framework.Unschedulable, "worker already exists on node")
-		}
-
-		// don't schedule server pods together.
-		if isServerPod(podName) && isServerPod(nodePodName){
-			return framework.NewStatus(framework.Unschedulable, "server already exists on node")
-		}
-
 		// only schedule pods with same id together
 		if getPodId(nodePodName) != getPodId(nodePodName) {
 			return framework.NewStatus(framework.Unschedulable, "pod ids are different")
