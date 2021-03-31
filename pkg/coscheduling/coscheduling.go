@@ -159,19 +159,20 @@ func (cs *Coscheduling) Filter(ctx context.Context, state *framework.CycleState,
 	strings.Contains(podName, "worker")
 
 	// Ignore non-DL pods (scheduler, controllers etc..)
-	if !isDLPod(podName) {
-		return framework.NewStatus(framework.Success, "")
-	}
-
-	nodePods := nodeInfo.Pods
-
-	for _, nodePod := range nodePods {
-		nodePodName := nodePod.Pod.Name
-		// only schedule pods with same id together
-		if getPodId(nodePodName) != getPodId(nodePodName) {
-			return framework.NewStatus(framework.Unschedulable, "pod ids are different")
-		}
-	}
+	//if !isDLPod(podName) {
+	//	return framework.NewStatus(framework.Success, "")
+	//}
+	//
+	//nodePods := nodeInfo.Pods
+	//
+	//for _, nodePod := range nodePods {
+	//	nodePodName := nodePod.Pod.Name
+	//	// only schedule pods with same id together
+	//	if getPodId(nodePodName) != getPodId(nodePodName) {
+	//		return framework.NewStatus(framework.Unschedulable, "pod ids are different")
+	//	}
+	//}
+	klog.Infof("Coscheduling filter called")
 	return framework.NewStatus(framework.Success, "")
 }
 
