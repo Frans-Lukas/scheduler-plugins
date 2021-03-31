@@ -57,7 +57,7 @@ func TestCoschedulingPlugin(t *testing.T) {
 		CancelFn: cancelFunc,
 		CloseFn:  func() {},
 	}
-	registry := fwkruntime.Registry{coscheduling.Name: coscheduling.New}
+	registry := fwkruntime.Registry{dlsched.Name: dlsched.New}
 	t.Log("create apiserver")
 	_, config := util.StartApi(t, todo.Done())
 
@@ -107,7 +107,7 @@ func TestCoschedulingPlugin(t *testing.T) {
 		Plugins: &schedapi.Plugins{
 			QueueSort: &schedapi.PluginSet{
 				Enabled: []schedapi.Plugin{
-					{Name: coscheduling.Name},
+					{Name: dlsched.Name},
 				},
 				Disabled: []schedapi.Plugin{
 					{Name: "*"},
@@ -115,28 +115,28 @@ func TestCoschedulingPlugin(t *testing.T) {
 			},
 			PreFilter: &schedapi.PluginSet{
 				Enabled: []schedapi.Plugin{
-					{Name: coscheduling.Name},
+					{Name: dlsched.Name},
 				},
 			},
 			PostFilter: &schedapi.PluginSet{
 				Enabled: []schedapi.Plugin{
-					{Name: coscheduling.Name},
+					{Name: dlsched.Name},
 				},
 			},
 			Permit: &schedapi.PluginSet{
 				Enabled: []schedapi.Plugin{
-					{Name: coscheduling.Name},
+					{Name: dlsched.Name},
 				},
 			},
 			PostBind: &schedapi.PluginSet{
 				Enabled: []schedapi.Plugin{
-					{Name: coscheduling.Name},
+					{Name: dlsched.Name},
 				},
 			},
 		},
 		PluginConfig: []schedapi.PluginConfig{
 			{
-				Name: coscheduling.Name,
+				Name: dlsched.Name,
 				Args: cfg,
 			},
 		},

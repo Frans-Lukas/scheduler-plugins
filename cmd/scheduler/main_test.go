@@ -476,7 +476,7 @@ profiles:
 		{
 			name:            "single profile config - Coscheduling",
 			flags:           []string{"--config", coschedulingConfigFile},
-			registryOptions: []app.Option{app.WithPlugin(coscheduling.Name, coscheduling.New)},
+			registryOptions: []app.Option{app.WithPlugin(dlsched.Name, dlsched.New)},
 			wantPlugins: map[string]map[string][]kubeschedulerconfig.Plugin{
 				"default-scheduler": {
 					"BindPlugin":       {{Name: "DefaultBinder"}},
@@ -493,7 +493,7 @@ profiles:
 		{
 			name:            "single profile config - Coscheduling with args",
 			flags:           []string{"--config", coschedulingConfigWithArgsFile},
-			registryOptions: []app.Option{app.WithPlugin(coscheduling.Name, coscheduling.New)},
+			registryOptions: []app.Option{app.WithPlugin(dlsched.Name, dlsched.New)},
 			wantPlugins: map[string]map[string][]kubeschedulerconfig.Plugin{
 				"default-scheduler": {
 					"BindPlugin":       {{Name: "DefaultBinder"}},
