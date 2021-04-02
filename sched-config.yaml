@@ -1,0 +1,18 @@
+apiVersion: kubescheduler.config.k8s.io/v1beta1
+kind: KubeSchedulerConfiguration
+leaderElection:
+  # (Optional) Change true to false if you are not running a HA control-plane.
+  leaderElect: true
+clientConnection:
+  kubeconfig: /etc/kubernetes/scheduler.conf
+profiles:
+- schedulerName: default-scheduler
+  plugins:
+    score:
+      enabled:
+      - name: Coscheduling
+  # pluginConfig is needed for coscheduling plugin to manipulate PodGroup CR objects.
+  pluginConfig:
+  - name: Coscheduling
+    args:
+      kubeConfigPath: /etc/kubernetes/scheduler.conf
