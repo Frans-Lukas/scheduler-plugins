@@ -10,7 +10,14 @@ profiles:
   plugins:
     score:
       enabled:
-      - name: Coscheduling
+        - name: Coscheduling
+      disabled:
+        - name: "*"
+    queueSort:
+      enabled:
+        - name: Coscheduling
+      disabled:
+        - name: "*"
   # pluginConfig is needed for coscheduling plugin to manipulate PodGroup CR objects.
   pluginConfig:
   - name: Coscheduling
