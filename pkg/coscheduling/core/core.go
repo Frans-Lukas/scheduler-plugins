@@ -50,6 +50,7 @@ type Manager interface {
 	AddDeniedPodGroup(string)
 	DeletePermittedPodGroup(string)
 	CalculateAssignedPods(string, string) int
+	GetPodsHostedOnNode(nodeName string) []*framework.PodInfo
 }
 
 // PodGroupManager defines the scheduling operation called
@@ -274,6 +275,23 @@ func (pgMgr *PodGroupManager) CalculateAssignedPods(podGroupName, namespace stri
 
 	return count
 }
+
+// CalculateAssignedPods returns the number of pods that has been assigned a node: assumed or bound.
+func (pgMgr *PodGroupManager) GetPodsHostedOnNode(nodeName string) []*framework.PodInfo {
+	nodeInfos, err := pgMgr.snapshotSharedLister.NodeInfos().List()
+	if err != nil {
+		klog.Errorf("Cannot get nodeInfos from frameworkHandle: %v", err)
+		return nil
+	}
+	for _, nodeInfo := range nodeInfos {
+		if nodeInfo.Node().Name == nodeName {
+			return nodeInfo.Pods
+		}
+	}
+	return nil
+}
+
+
 
 // CheckClusterResource checks if resource capacity of the cluster can satisfy <resourceRequest>.
 // It returns an error detailing the resource gap if not satisfied; otherwise returns nil.
