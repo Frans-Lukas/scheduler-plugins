@@ -246,9 +246,9 @@ func getPodId(name string) string {
 	if len(name) < 10 {
 		return name
 	}
-	id := name[6:16]
+	id := name[7:16]
 	klog.Infof("Found podid %s", id)
-	return name[6:16]
+	return name[7:16]
 }
 func isServerPod(name string) bool {
 	return strings.Contains(name, "server")
@@ -262,6 +262,10 @@ func isSchedulerPod(name string) bool {
 	return strings.Contains(name, "scheduler")
 }
 
-func isDLPod(name string) bool {
+func containsDLType(name string) bool {
 	return isWorkerPod(name) || isServerPod(name) || isSchedulerPod(name)
+}
+
+func isDLPod(name string) bool {
+	return len(name) > 16 && containsDLType(name) && !containsDLType(getPodId(name))
 }
