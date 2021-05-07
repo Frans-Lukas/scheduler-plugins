@@ -18,6 +18,7 @@ package coscheduling
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -45,11 +46,13 @@ type Coscheduling struct {
 	frameworkHandler framework.FrameworkHandle
 	pgMgr            core.Manager
 	scheduleTimeout  *time.Duration
-	jobCreationTimestamps *map[string]time.Time
+	jobCreationTimestamps *map[string]metav1.Time
+	jobTypes *map[string]map[string]bool
 }
 
 var _ framework.QueueSortPlugin = &Coscheduling{}
 var _ = framework.ScorePlugin(&Coscheduling{})
+var _ = framework.FilterPlugin(&Coscheduling{})
 
 const (
 	// Name is the name of the plugin used in Registry and configurations.
@@ -89,6 +92,9 @@ func New(obj runtime.Object, handle framework.FrameworkHandle) (framework.Plugin
 	scheduleTimeDuration := time.Duration(args.PermitWaitingTimeSeconds) * time.Second
 	deniedPGExpirationTime := time.Duration(args.DeniedPGExpirationTimeSeconds) * time.Second
 
+	jobCreationTimeStamps := make(map[string]metav1.Time, 0)
+	jobTypes := make(map[string]map[string]bool, 0)
+
 	ctx := context.TODO()
 
 	pgMgr := core.NewPodGroupManager(pgClient, handle.SnapshotSharedLister(), &scheduleTimeDuration, &deniedPGExpirationTime, pgInformer, podInformer)
@@ -96,6 +102,8 @@ func New(obj runtime.Object, handle framework.FrameworkHandle) (framework.Plugin
 		frameworkHandler: handle,
 		pgMgr:            pgMgr,
 		scheduleTimeout:  &scheduleTimeDuration,
+		jobCreationTimestamps: &jobCreationTimeStamps,
+		jobTypes: &jobTypes,
 	}
 	pgInformerFactory.Start(ctx.Done())
 	informerFactory.Start(ctx.Done())
@@ -121,8 +129,8 @@ func (cs *Coscheduling) Less(podInfo1, podInfo2 *framework.QueuedPodInfo) bool {
 	podId1 := getPodId(podInfo1.Pod.Name)
 	podId2 := getPodId(podInfo2.Pod.Name)
 
-	cs.addJobTimeStampToMap(podInfo1)
-	cs.addJobTimeStampToMap(podInfo2)
+	cs.addJobTimeStampToMap(podInfo1.Pod.Name, podInfo1.Pod.CreationTimestamp)
+	cs.addJobTimeStampToMap(podInfo2.Pod.Name, podInfo2.Pod.CreationTimestamp)
 	prio1 := podutil.GetPodPriority(podInfo1.Pod)
 	prio2 := podutil.GetPodPriority(podInfo2.Pod)
 	if prio1 != prio2 {
@@ -130,25 +138,46 @@ func (cs *Coscheduling) Less(podInfo1, podInfo2 *framework.QueuedPodInfo) bool {
 	}
 	creationTime1 := (*cs.jobCreationTimestamps)[podId1]
 	creationTime2 := (*cs.jobCreationTimestamps)[podId2]
-	if creationTime1.Equal(creationTime2) {
+	if creationTime1.Equal(&creationTime2) {
 		return GetNamespacedName(podInfo1.Pod) < GetNamespacedName(podInfo2.Pod)
 	}
-	return creationTime1.Before(creationTime2)
+	return creationTime1.Before(&creationTime2)
 }
 
 func GetNamespacedName(obj metav1.Object) string {
 	return fmt.Sprintf("%v/%v", obj.GetNamespace(), obj.GetName())
 }
 
-func (cs *Coscheduling) addJobTimeStampToMap(podInfo *framework.QueuedPodInfo) {
-	podId := getPodId(podInfo.Pod.Name)
-	timeStamp := podInfo.Timestamp
+
+func (cs *Coscheduling) addJobTypeToJobTypeMap(podName string) {
+	podId := getPodId(podName)
+	podType, err := getPodType(podName)
+	if err == nil {
+		(*cs.jobTypes)[podId][podType] = true
+	}
+}
+
+func getPodType(name string) (string, error){
+	if strings.Contains(name, "worker") {
+		return "worker", nil
+	}
+	if strings.Contains(name, "server") {
+		return "server", nil
+	}
+	if strings.Contains(name, "scheduler") {
+		return "scheduler", nil
+	}
+	return "invalid", errors.New("not DL pod")
+}
+
+func (cs *Coscheduling) addJobTimeStampToMap(podName string, timeStamp metav1.Time) {
+	podId := getPodId(podName)
 
 	// podId exists
 	if prevTimeStamp, ok := (*cs.jobCreationTimestamps)[podId]; ok {
 
 		// previous time stamp was after the received time stamp
-		if prevTimeStamp.After(timeStamp) {
+		if timeStamp.Before(&prevTimeStamp) {
 			(*cs.jobCreationTimestamps)[podId] = timeStamp
 		}
 	} else {
@@ -187,9 +216,31 @@ func (cs *Coscheduling) Score(ctx context.Context, state *framework.CycleState, 
 	return MAX_SCORE, framework.NewStatus(framework.Success, "")
 }
 
+
+func (cs *Coscheduling) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
+	klog.Infof("Coscheduling filter called")
+	klog.Flush()
+	podName := pod.Name
+	if !isDLPod(podName) {
+		return framework.NewStatus(framework.Success, "")
+	}
+	cs.addJobTimeStampToMap(podName, pod.CreationTimestamp)
+	cs.addJobTypeToJobTypeMap(podName)
+	if cs.fullDDLGroupExists(getPodId(podName)){
+		return framework.NewStatus(framework.Success, "")
+	}
+	return framework.NewStatus(framework.Unschedulable, "waiting for all pod types to exist")
+}
+
+func (cs *Coscheduling) fullDDLGroupExists(id string) bool {
+	return len((*cs.jobTypes)[id]) == 3
+}
+
+
 func (cs *Coscheduling) ScoreExtensions() framework.ScoreExtensions {
 	return cs
 }
+
 
 func getPodId(name string) string {
 	if len(name) < 10 {
