@@ -153,7 +153,13 @@ func (cs *Coscheduling) addJobTypeToJobTypeMap(podName string) {
 	podId := getPodId(podName)
 	podType, err := getPodType(podName)
 	if err == nil {
-		(*cs.jobTypes)[podId][podType] = true
+		if _, ok := (*cs.jobTypes)[podId]; ok {
+			(*cs.jobTypes)[podId][podType] = true
+		} else {
+			(*cs.jobTypes)[podId] = make(map[string]bool, 0)
+			(*cs.jobTypes)[podId][podType] = true
+		}
+
 	}
 }
 
